@@ -1,0 +1,10 @@
+# 视频处理脚本依赖
+
+# 系统依赖: 需要安装ffmpeg
+# macOS: brew install ffmpeg
+# Linux: apt-get install ffmpeg 或 yum install ffmpeg
+# Windows: 从 https://ffmpeg.org/download.html 下载安装
+
+# Python依赖
+openai-whisper>=20231117
+
