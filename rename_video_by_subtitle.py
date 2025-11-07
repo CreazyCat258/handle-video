@@ -4,19 +4,22 @@
 视频文件重命名脚本
 根据视频字幕的第一句内容重命名视频文件
 支持从内嵌字幕提取，如果没有字幕则使用语音识别
+支持批量处理指定文件夹下的所有视频文件
 """
 
 import os
 import subprocess
 import re
 import sys
-from pathlib import Path
 
 try:
     import whisper
     WHISPER_AVAILABLE = True
 except ImportError:
     WHISPER_AVAILABLE = False
+
+# 全局变量：Whisper模型实例（避免重复加载）
+_whisper_model = None
 
 
 def extract_subtitle_first_line(video_path):
@@ -225,12 +228,41 @@ def extract_audio_from_video(video_path, output_audio_path):
         return False
 
 
-def speech_to_text_whisper(video_path):
+def get_whisper_model():
+    """
+    获取Whisper模型实例（单例模式，避免重复加载）
+    
+    Returns:
+        whisper.Model: Whisper模型实例，如果失败返回None
+    """
+    global _whisper_model
+    
+    if not WHISPER_AVAILABLE:
+        return None
+    
+    if _whisper_model is None:
+        try:
+            print("正在加载Whisper模型（首次使用会下载模型，请耐心等待）...")
+            # 使用base模型，平衡速度和准确性
+            # 可选模型: tiny(最快但准确度低), base(推荐), small, medium, large(最准确但慢)
+            _whisper_model = whisper.load_model("base")
+            print("Whisper模型加载完成！")
+        except Exception as e:
+            print(f"加载Whisper模型时出错: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    return _whisper_model
+
+
+def speech_to_text_whisper(video_path, model=None):
     """
     使用Whisper进行语音识别（可以直接处理视频文件）
     
     Args:
         video_path: 视频文件路径（whisper可以直接处理）
+        model: Whisper模型实例（可选，如果不提供则使用全局模型）
         
     Returns:
         str: 识别出的第一句话，如果失败返回None
@@ -240,10 +272,12 @@ def speech_to_text_whisper(video_path):
         return None
     
     try:
-        print("正在加载Whisper模型（首次使用会下载模型，请耐心等待）...")
-        # 使用base模型，平衡速度和准确性
-        # 可选模型: tiny(最快但准确度低), base(推荐), small, medium, large(最准确但慢)
-        model = whisper.load_model("base")
+        # 使用传入的模型或获取全局模型
+        if model is None:
+            model = get_whisper_model()
+        
+        if model is None:
+            return None
         
         print("正在进行语音识别（这可能需要一些时间，请耐心等待）...")
         # whisper可以直接处理视频文件，language=None表示自动检测语言
@@ -277,26 +311,37 @@ def speech_to_text_whisper(video_path):
         return None
 
 
-def rename_video_by_subtitle(video_path):
+def rename_video_by_subtitle(video_path, skip_subtitle=False, whisper_model=None):
     """
     根据字幕第一句重命名视频文件
     
     Args:
         video_path: 视频文件路径
+        skip_subtitle: 是否跳过字幕提取，直接使用语音识别（默认False）
+        whisper_model: Whisper模型实例（可选，用于批量处理时复用模型）
+        
+    Returns:
+        bool: 是否成功重命名
     """
     if not os.path.exists(video_path):
         print(f"错误: 文件不存在: {video_path}")
         return False
     
-    print(f"正在处理视频文件: {video_path}")
+    print(f"\n正在处理视频文件: {os.path.basename(video_path)}")
     
-    # 首先尝试从内嵌字幕提取
-    print("步骤1: 尝试从内嵌字幕提取...")
-    first_line = extract_subtitle_first_line(video_path)
+    first_line = None
     
-    # 如果没有字幕，尝试语音识别
+    # 如果不跳过字幕提取，先尝试从内嵌字幕提取
+    if not skip_subtitle:
+        print("步骤1: 尝试从内嵌字幕提取...")
+        first_line = extract_subtitle_first_line(video_path)
+    
+    # 如果没有字幕或跳过字幕提取，使用语音识别
     if not first_line:
-        print("未找到内嵌字幕，尝试使用语音识别...")
+        if not skip_subtitle:
+            print("未找到内嵌字幕，尝试使用语音识别...")
+        else:
+            print("跳过字幕提取，直接使用语音识别...")
         
         if not WHISPER_AVAILABLE:
             print("错误: 未安装whisper库")
@@ -305,8 +350,8 @@ def rename_video_by_subtitle(video_path):
             return False
         
         # 直接使用whisper处理视频文件（whisper会自动提取音频）
-        print("步骤2: 进行语音识别（直接处理视频文件）...")
-        first_line = speech_to_text_whisper(video_path)
+        print("进行语音识别（直接处理视频文件）...")
+        first_line = speech_to_text_whisper(video_path, model=whisper_model)
         
         if not first_line:
             print("警告: 语音识别失败，可能原因：")
@@ -340,17 +385,45 @@ def rename_video_by_subtitle(video_path):
     # 重命名文件
     try:
         os.rename(video_path, new_path)
-        print(f"成功重命名: {os.path.basename(video_path)} -> {os.path.basename(new_path)}")
+        print(f"✓ 成功重命名: {os.path.basename(video_path)} -> {os.path.basename(new_path)}")
         return True
     except Exception as e:
-        print(f"重命名失败: {e}")
+        print(f"✗ 重命名失败: {e}")
         return False
 
 
+def get_video_files(directory):
+    """
+    获取指定目录下的所有视频文件
+    
+    Args:
+        directory: 目录路径
+        
+    Returns:
+        list: 视频文件路径列表
+    """
+    video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv', '.webm', '.m4v']
+    video_files = []
+    
+    if not os.path.exists(directory):
+        print(f"错误: 目录不存在: {directory}")
+        return video_files
+    
+    # 遍历目录下的所有文件
+    for file_path in os.listdir(directory):
+        full_path = os.path.join(directory, file_path)
+        if os.path.isfile(full_path):
+            _, ext = os.path.splitext(file_path)
+            if ext.lower() in video_extensions:
+                video_files.append(full_path)
+    
+    return sorted(video_files)
+
+
 def main():
-    """主函数"""
-    # 设置要处理的视频文件路径
-    video_file = os.path.join('test', 'test1.mp4')
+    """主函数 - 批量处理test文件夹下的所有视频文件"""
+    # 设置要处理的视频文件夹
+    video_dir = 'test'
     
     # 检查ffmpeg是否安装
     try:
@@ -365,18 +438,71 @@ def main():
     
     # 检查whisper是否安装
     if not WHISPER_AVAILABLE:
-        print("警告: 未安装whisper库，将无法使用语音识别功能")
+        print("错误: 未安装whisper库，批量处理需要语音识别功能")
         print("安装方法: pip install openai-whisper")
         print("或者: pip install -r requirements.txt")
-        print("继续执行，但如果视频没有字幕将无法处理...")
+        sys.exit(1)
     
-    # 执行重命名
-    success = rename_video_by_subtitle(video_file)
+    # 获取所有视频文件
+    print(f"正在扫描目录: {video_dir}")
+    video_files = get_video_files(video_dir)
     
-    if success:
-        print("处理完成！")
-    else:
-        print("处理失败，请检查错误信息")
+    if not video_files:
+        print(f"未在 {video_dir} 目录下找到任何视频文件")
+        sys.exit(1)
+    
+    print(f"\n找到 {len(video_files)} 个视频文件:")
+    for i, video_file in enumerate(video_files, 1):
+        print(f"  {i}. {os.path.basename(video_file)}")
+    
+    # 确认是否继续
+    print(f"\n准备批量处理 {len(video_files)} 个视频文件")
+    print("注意: 所有视频将直接使用语音识别（跳过字幕提取）")
+    print("处理过程可能需要较长时间，请耐心等待...\n")
+    
+    # 预先加载Whisper模型（避免每个文件都重新加载）
+    print("=" * 60)
+    whisper_model = get_whisper_model()
+    if whisper_model is None:
+        print("错误: 无法加载Whisper模型")
+        sys.exit(1)
+    
+    # 批量处理视频文件
+    print("=" * 60)
+    print("开始批量处理...\n")
+    
+    success_count = 0
+    fail_count = 0
+    failed_files = []
+    
+    for i, video_file in enumerate(video_files, 1):
+        print(f"\n[{i}/{len(video_files)}] 处理中...")
+        success = rename_video_by_subtitle(
+            video_file, 
+            skip_subtitle=True,  # 跳过字幕提取，直接使用语音识别
+            whisper_model=whisper_model  # 复用模型实例
+        )
+        
+        if success:
+            success_count += 1
+        else:
+            fail_count += 1
+            failed_files.append(video_file)
+    
+    # 输出处理结果统计
+    print("\n" + "=" * 60)
+    print("批量处理完成！")
+    print("=" * 60)
+    print(f"总计: {len(video_files)} 个文件")
+    print(f"成功: {success_count} 个")
+    print(f"失败: {fail_count} 个")
+    
+    if failed_files:
+        print("\n失败的文件列表:")
+        for failed_file in failed_files:
+            print(f"  - {os.path.basename(failed_file)}")
+    
+    if fail_count > 0:
         sys.exit(1)
 
 
