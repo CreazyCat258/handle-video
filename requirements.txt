@@ -7,4 +7,5 @@
 
 # Python依赖
 openai-whisper>=20231117
+requests>=2.31.0
 
