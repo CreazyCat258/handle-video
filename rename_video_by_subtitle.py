@@ -191,6 +191,44 @@ def extract_subtitle_first_line(video_path):
         return None
 
 
+def get_video_duration(video_path):
+    """
+    获取视频时长（秒）
+    
+    Args:
+        video_path: 视频文件路径
+        
+    Returns:
+        int: 视频时长（秒），如果获取失败返回None
+    """
+    try:
+        cmd = [
+            'ffprobe',
+            '-v', 'error',
+            '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            video_path
+        ]
+        
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        
+        if result.returncode == 0 and result.stdout.strip():
+            duration = float(result.stdout.strip())
+            # 四舍五入到整数秒
+            return int(round(duration))
+        
+        return None
+        
+    except Exception as e:
+        print(f"获取视频时长时出错: {e}")
+        return None
+
+
 def extract_audio_from_video(video_path, output_audio_path):
     """
     从视频文件中提取音频
@@ -362,19 +400,29 @@ def rename_video_by_subtitle(video_path, skip_subtitle=False, whisper_model=None
     
     print(f"提取到的第一句字幕: {first_line}")
     
+    # 获取视频时长
+    print("正在获取视频时长...")
+    duration = get_video_duration(video_path)
+    if duration is None:
+        print("警告: 无法获取视频时长，将不添加时长信息")
+        duration_str = ""
+    else:
+        duration_str = f"——{duration}s"
+        print(f"视频时长: {duration}秒")
+    
     # 获取文件目录和扩展名
     file_dir = os.path.dirname(video_path)
     file_ext = os.path.splitext(video_path)[1]
     
-    # 生成新文件名
-    new_filename = first_line + file_ext
+    # 生成新文件名（包含时长信息）
+    new_filename = first_line + duration_str + file_ext
     new_path = os.path.join(file_dir, new_filename)
     
     # 检查新文件名是否已存在
     if os.path.exists(new_path):
         print(f"警告: 目标文件已存在: {new_path}")
         # 添加序号
-        base_name = first_line
+        base_name = first_line + duration_str
         counter = 1
         while os.path.exists(new_path):
             new_filename = f"{base_name}_{counter}{file_ext}"
